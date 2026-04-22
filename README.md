@@ -42,6 +42,35 @@ npm run build
 npm start
 ```
 
+Nesse modo, o servidor Express entrega o frontend em `client/dist` e tambem responde
+as rotas `/api/*` e `/socket.io/*`. O dominio publico precisa apontar para esse
+servidor Node, normalmente por um proxy HTTPS/Nginx/Apache para a porta `3001`.
+
+### Front e backend em dominios diferentes
+
+Se o frontend for publicado em um host estatico, como no erro `404` em
+`https://disparo.dartsistemas.com/api/health`, publique tambem o backend Node em
+outro endereco e aponte o frontend para ele.
+
+Opcao 1: definir a URL antes do build:
+
+```bash
+$env:VITE_API_BASE_URL="https://api.seu-dominio.com"
+npm run build
+```
+
+Opcao 2: editar depois do build o arquivo `client/dist/runtime-config.js`:
+
+```js
+window.DISPARO_CONFIG = {
+  apiBaseUrl: "https://api.seu-dominio.com",
+};
+```
+
+O backend precisa manter acessiveis `/api/*` e `/socket.io/*`. As chaves do
+Supabase, principalmente `SUPABASE_SERVICE_ROLE_KEY`, devem ficar somente no
+ambiente do backend.
+
 ## Observacoes
 
 - Os numeros precisam ter DDD. Se a planilha nao tiver codigo do pais, a interface usa `55` por padrao.

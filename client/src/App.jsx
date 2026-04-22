@@ -1,14 +1,16 @@
 import { startTransition, useEffect, useState } from "react";
 import { io } from "socket.io-client";
 
-const fallbackApiBaseUrl =
-  import.meta.env.VITE_API_BASE_URL ||
-  (import.meta.env.DEV ? "http://localhost:3001" : window.location.origin);
+const normalizeBaseUrl = (value) => String(value ?? "").trim().replace(/\/$/, "");
 
-const apiBaseUrl = fallbackApiBaseUrl.replace(/\/$/, "");
-const offlineServerMessage = `Nao foi possivel conectar ao servidor em ${apiBaseUrl}. Verifique se o backend esta rodando.`;
+const runtimeApiBaseUrl =
+  window.DISPARO_CONFIG?.apiBaseUrl || window.DISPARO_API_BASE_URL || "";
+const apiBaseUrl = normalizeBaseUrl(runtimeApiBaseUrl || import.meta.env.VITE_API_BASE_URL);
+const apiDisplayUrl = apiBaseUrl || window.location.origin;
+const offlineServerMessage = `Nao foi possivel conectar ao servidor em ${apiDisplayUrl}. Verifique se o backend esta rodando.`;
+const missingBackendMessage = `O backend nao respondeu em ${apiDisplayUrl}. Confira se o servidor foi publicado e se a URL da API esta configurada.`;
 
-const socket = io(apiBaseUrl, {
+const socket = io(apiBaseUrl || undefined, {
   autoConnect: false,
 });
 
@@ -246,6 +248,11 @@ const request = async (path, options = {}) => {
 
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
+
+    if (response.status === 404 && path.startsWith("/api/")) {
+      throw new Error(data.message || missingBackendMessage);
+    }
+
     throw new Error(data.message || "Nao foi possivel concluir a operacao.");
   }
 
