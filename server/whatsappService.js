@@ -56,7 +56,7 @@ const isLockedProfileError = (error) => {
   );
 };
 
-export function createWhatsAppService(io, persistence = null) {
+export function createWhatsAppService(io) {
   let client = null;
   let isManualShutdown = false;
   let initializingPromise = null;
@@ -503,8 +503,6 @@ export function createWhatsAppService(io, persistence = null) {
 
   const sendBulkMessages = async ({
     numbers,
-    contacts = [],
-    sourceFileName = null,
     message,
     defaultCountryCode = "55",
     intervalMs = 2500,
@@ -551,34 +549,6 @@ export function createWhatsAppService(io, persistence = null) {
     let successCount = 0;
     let failedCount = 0;
     const items = [];
-    let campaignId = null;
-
-    if (persistence) {
-      const contactsToPersist =
-        Array.isArray(contacts) && contacts.length > 0
-          ? contacts
-          : uniqueNumbers.map((number) => ({
-              name: "",
-              phone: number,
-              normalizedPhone: number,
-              notes: "",
-            }));
-
-      await persistence.ensureContacts({
-        contacts: contactsToPersist,
-        sourceFileName,
-      });
-
-      const campaignResult = await persistence.createCampaign({
-        message: trimmedMessage,
-        intervalMs: safeInterval,
-        totalContacts: uniqueNumbers.length,
-        sourceFileName,
-        sessionPhoneNumber: sessionState.phoneNumber,
-      });
-
-      campaignId = campaignResult?.enabled ? campaignResult.campaignId : null;
-    }
 
     replaceDispatch({
       inProgress: true,
@@ -622,23 +592,6 @@ export function createWhatsAppService(io, persistence = null) {
 
       items.push(resultItem);
 
-      if (persistence && campaignId) {
-        await persistence.recordCampaignMessage({
-          campaignId,
-          phone: number,
-          status: resultItem.status,
-          detail: resultItem.detail,
-          sentAt: resultItem.sentAt,
-        });
-
-        await persistence.updateCampaignProgress({
-          campaignId,
-          processedContacts: index + 1,
-          successCount,
-          failedCount,
-        });
-      }
-
       replaceDispatch({
         inProgress: true,
         total: uniqueNumbers.length,
@@ -668,17 +621,41 @@ export function createWhatsAppService(io, persistence = null) {
     };
 
     replaceDispatch(finalState);
+    return finalState;
+  };
 
-    if (persistence && campaignId) {
-      await persistence.finishCampaign({
-        campaignId,
-        processedContacts: uniqueNumbers.length,
-        successCount,
-        failedCount,
-      });
+  const sendSingleMessage = async ({
+    number,
+    message,
+    defaultCountryCode = "55",
+  }) => {
+    if (!client || sessionState.status !== "ready") {
+      throw new Error("Conecte o WhatsApp antes de enviar.");
     }
 
-    return finalState;
+    const normalized = normalizeNumber(number, defaultCountryCode);
+    if (!normalized) {
+      throw new Error("Informe um numero de telefone valido.");
+    }
+
+    const trimmedMessage = String(message ?? "").trim();
+    if (!trimmedMessage) {
+      throw new Error("Digite a mensagem a ser enviada.");
+    }
+
+    const numberId = await client.getNumberId(normalized);
+    if (!numberId?._serialized) {
+      throw new Error("Numero nao encontrado no WhatsApp.");
+    }
+
+    await client.sendMessage(numberId._serialized, trimmedMessage);
+
+    return {
+      number: normalized,
+      status: "sent",
+      detail: "Mensagem enviada com sucesso.",
+      sentAt: new Date().toISOString(),
+    };
   };
 
   return {
@@ -688,5 +665,6 @@ export function createWhatsAppService(io, persistence = null) {
     logout,
     shutdown: () => disposeClient(),
     sendBulkMessages,
+    sendSingleMessage,
   };
 }

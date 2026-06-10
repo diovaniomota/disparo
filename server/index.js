@@ -6,7 +6,6 @@ import path from "node:path";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { Server as SocketServer } from "socket.io";
-import { createSupabasePersistence } from "./supabasePersistence.js";
 import { createWhatsAppService } from "./whatsappService.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -25,46 +24,21 @@ const io = new SocketServer(httpServer, {
   },
 });
 
-const supabasePersistence = createSupabasePersistence();
-const whatsappService = createWhatsAppService(io, supabasePersistence);
+const whatsappService = createWhatsAppService(io);
 
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 
-app.get("/api/health", async (_request, response) => {
+app.get("/api/health", (_request, response) => {
   response.json({
     ok: true,
     session: whatsappService.getSessionState(),
     dispatch: whatsappService.getDispatchState(),
-    supabase: await supabasePersistence.getStatus(),
   });
 });
 
 app.get("/api/session", (_request, response) => {
   response.json(whatsappService.getSessionState());
-});
-
-app.get("/api/supabase/status", async (_request, response) => {
-  response.json(await supabasePersistence.getStatus({ force: true }));
-});
-
-app.get("/api/campaigns", async (request, response, next) => {
-  try {
-    const limit = Number(request.query.limit ?? 8);
-    response.json(await supabasePersistence.listCampaigns({ limit }));
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/campaigns/:campaignId/recipients", async (request, response, next) => {
-  try {
-    response.json(
-      await supabasePersistence.getCampaignRecipients(request.params.campaignId),
-    );
-  } catch (error) {
-    next(error);
-  }
 });
 
 app.post("/api/session/start", async (_request, response, next) => {
@@ -85,18 +59,18 @@ app.post("/api/session/logout", async (_request, response, next) => {
   }
 });
 
-app.post("/api/contacts/import", async (request, response, next) => {
+app.post("/api/messages/send", async (request, response, next) => {
   try {
-    const result = await supabasePersistence.importContacts(request.body ?? {});
+    const result = await whatsappService.sendBulkMessages(request.body ?? {});
     response.json(result);
   } catch (error) {
     next(error);
   }
 });
 
-app.post("/api/messages/send", async (request, response, next) => {
+app.post("/api/messages/send-single", async (request, response, next) => {
   try {
-    const result = await whatsappService.sendBulkMessages(request.body ?? {});
+    const result = await whatsappService.sendSingleMessage(request.body ?? {});
     response.json(result);
   } catch (error) {
     next(error);
@@ -148,9 +122,6 @@ httpServer.on("error", (error) => {
     console.error("");
     console.error(`A porta ${port} ja esta em uso.`);
     console.error("Feche a instancia antiga do servidor ou rode com outra porta.");
-    console.error(
-      "No PowerShell: $env:PORT=3002; $env:VITE_API_BASE_URL='http://localhost:3002'; npm run dev",
-    );
     process.exit(1);
   }
 

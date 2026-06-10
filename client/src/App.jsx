@@ -36,19 +36,6 @@ const initialDispatchState = {
   finishedAt: null,
 };
 
-const initialSupabaseState = {
-  configured: false,
-  ready: false,
-  lastCheckedAt: null,
-  message: "Supabase nao configurado.",
-};
-
-const initialSavedCampaignsState = {
-  items: [],
-  loading: false,
-  loaded: false,
-};
-
 const statusLabels = {
   loading: "Carregando",
   idle: "Desconectado",
@@ -262,8 +249,7 @@ const request = async (path, options = {}) => {
 export default function App() {
   const [session, setSession] = useState(initialSessionState);
   const [dispatchState, setDispatchState] = useState(initialDispatchState);
-  const [supabaseState, setSupabaseState] = useState(initialSupabaseState);
-  const [savedCampaigns, setSavedCampaigns] = useState(initialSavedCampaignsState);
+  const [activeTab, setActiveTab] = useState("disparo"); // "disparo" | "direto"
   const [message, setMessage] = useState(
     "Ola! Esta e uma mensagem enviada pela plataforma. Se precisar responder, fique a vontade.",
   );
@@ -276,31 +262,13 @@ export default function App() {
   const [errorMessage, setErrorMessage] = useState("");
   const [busyAction, setBusyAction] = useState("");
 
-  const loadSavedCampaigns = async ({ force = false } = {}) => {
-    if (!supabaseState.ready && !force) {
-      return;
-    }
-
-    setSavedCampaigns((current) => ({
-      ...current,
-      loading: true,
-    }));
-
-    try {
-      const result = await request("/api/campaigns?limit=6");
-      setSavedCampaigns({
-        items: result.campaigns ?? [],
-        loading: false,
-        loaded: true,
-      });
-    } catch {
-      setSavedCampaigns((current) => ({
-        ...current,
-        loading: false,
-        loaded: current.loaded,
-      }));
-    }
-  };
+  // Estado para envio direto
+  const [directNumber, setDirectNumber] = useState("");
+  const [directMessage, setDirectMessage] = useState(
+    "Ola! Esta e uma mensagem direta enviada pela plataforma.",
+  );
+  const [directFeedback, setDirectFeedback] = useState(null); // { status: "sent"|"error", text: string }
+  const [directBusy, setDirectBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -332,15 +300,7 @@ export default function App() {
 
         setSession(data.session);
         setDispatchState(data.dispatch);
-        setSupabaseState(data.supabase ?? initialSupabaseState);
         setErrorMessage("");
-
-        if (data.supabase?.ready) {
-          setSavedCampaigns((current) => ({
-            ...current,
-            loaded: current.loaded,
-          }));
-        }
 
         if (!socket.connected) {
           socket.connect();
@@ -368,12 +328,6 @@ export default function App() {
       socket.disconnect();
     };
   }, []);
-
-  useEffect(() => {
-    if (supabaseState.ready && !savedCampaigns.loaded && !savedCampaigns.loading) {
-      loadSavedCampaigns({ force: true });
-    }
-  }, [savedCampaigns.loaded, savedCampaigns.loading, supabaseState.ready]);
 
   const handleStartSession = async () => {
     setBusyAction("session");
@@ -422,13 +376,6 @@ export default function App() {
     try {
       const rows = await loadSpreadsheetRows(file);
       const extracted = extractContacts(rows, countryCode);
-      const importResult = await request("/api/contacts/import", {
-        method: "POST",
-        body: JSON.stringify({
-          contacts: extracted.contacts,
-          sourceFileName: file.name,
-        }),
-      }).catch(() => null);
 
       startTransition(() => {
         setContacts(extracted.contacts);
@@ -442,18 +389,8 @@ export default function App() {
         });
       });
 
-      if (importResult?.enabled) {
-        setFeedback(
-          `${extracted.numbers.length} numeros foram carregados da planilha e ${importResult.savedCount} contatos foram salvos no Supabase.`,
-        );
-      } else if (importResult?.message) {
-        setFeedback(
-          `${extracted.numbers.length} numeros foram carregados da planilha. ${importResult.message}`,
-        );
-      } else {
-        setFeedback(`${extracted.numbers.length} numeros foram carregados da planilha.`);
-      }
-    } catch (error) {
+      setFeedback(`${extracted.numbers.length} numeros foram carregados da planilha.`);
+    } catch {
       setErrorMessage("Nao foi possivel ler a planilha. Verifique se o arquivo e valido.");
     } finally {
       event.target.value = "";
@@ -470,8 +407,6 @@ export default function App() {
         method: "POST",
         body: JSON.stringify({
           numbers,
-          contacts,
-          sourceFileName: sheetMeta?.fileName ?? null,
           message,
           defaultCountryCode: countryCode,
           intervalMs,
@@ -481,10 +416,6 @@ export default function App() {
       setFeedback(
         `Disparo concluido: ${result.successCount} enviados e ${result.failedCount} falhas.`,
       );
-
-      if (supabaseState.ready) {
-        loadSavedCampaigns({ force: true });
-      }
     } catch (error) {
       setErrorMessage(toUserErrorMessage(error));
     } finally {
@@ -492,35 +423,30 @@ export default function App() {
     }
   };
 
-  const handleReuseCampaignList = async (campaignId) => {
-    setBusyAction(`reuse-${campaignId}`);
-    setErrorMessage("");
-    setFeedback("");
+  const handleSendDirect = async () => {
+    setDirectBusy(true);
+    setDirectFeedback(null);
 
     try {
-      const result = await request(`/api/campaigns/${campaignId}/recipients`);
-      const reusedContacts = result.recipients ?? [];
-      const reusedNumbers = reusedContacts.map((contact) => contact.normalizedPhone);
-
-      startTransition(() => {
-        setContacts(reusedContacts);
-        setNumbers(reusedNumbers);
-        setSheetMeta({
-          fileName: result.campaign?.sourceFileName || "Lista salva no Supabase",
-          totalRows: reusedContacts.length,
-          extractedCount: reusedContacts.length,
-          columnIndex: 0,
-          headerDetected: false,
-        });
+      await request("/api/messages/send-single", {
+        method: "POST",
+        body: JSON.stringify({
+          number: directNumber,
+          message: directMessage,
+          defaultCountryCode: countryCode,
+        }),
       });
-
-      setFeedback(
-        `${reusedContacts.length} contatos foram carregados de uma lista salva no Supabase.`,
-      );
+      setDirectFeedback({
+        status: "sent",
+        text: `Mensagem enviada com sucesso para ${directNumber}.`,
+      });
     } catch (error) {
-      setErrorMessage(toUserErrorMessage(error));
+      setDirectFeedback({
+        status: "error",
+        text: toUserErrorMessage(error),
+      });
     } finally {
-      setBusyAction("");
+      setDirectBusy(false);
     }
   };
 
@@ -530,11 +456,8 @@ export default function App() {
   const isConnected = session.status === "ready";
   const shouldShowReconnectCopy = session.status === "unpaired" || session.disconnectedByPhone;
   const canSend = isConnected && numbers.length > 0 && message.trim() && !dispatchState.inProgress;
-  const supabaseBadgeLabel = !supabaseState.configured
-    ? "Supabase nao configurado"
-    : supabaseState.ready
-      ? "Supabase conectado"
-      : "Supabase aguardando schema";
+  const canSendDirect =
+    isConnected && directNumber.trim() && directMessage.trim() && !directBusy;
 
   return (
     <main className="page-shell">
@@ -544,10 +467,10 @@ export default function App() {
       <section className="hero">
         <div className="hero-copy">
           <span className="eyebrow">Plataforma React + WhatsApp Web</span>
-          <h1>Conecte por QR code, importe sua lista e dispare mensagens em poucos passos.</h1>
+          <h1>Conecte por QR code e dispare mensagens em poucos passos.</h1>
           <p>
-            A tela centraliza toda a operacao: autenticar o WhatsApp, carregar os
-            contatos do Excel e acompanhar o envio em tempo real.
+            A tela centraliza toda a operacao: autenticar o WhatsApp, enviar para um numero
+            especifico ou disparar para uma lista inteira.
           </p>
         </div>
 
@@ -590,10 +513,6 @@ export default function App() {
             </button>
           </div>
 
-          <p className="status-hint">
-            <strong>{supabaseBadgeLabel}</strong>
-            {supabaseState.message ? ` ${supabaseState.message}` : ""}
-          </p>
           {session.lastError && <p className="status-error">{session.lastError}</p>}
           {session.connectionState && (
             <small>Estado atual do WhatsApp Web: {session.connectionState}</small>
@@ -627,7 +546,7 @@ export default function App() {
                   ? "WhatsApp conectado e pronto para enviar."
                   : shouldShowReconnectCopy
                     ? "A sessao foi removida no celular. Gere um novo QR code para voltar a conectar."
-                  : "Clique em gerar QR code para iniciar a autenticacao."}
+                    : "Clique em gerar QR code para iniciar a autenticacao."}
               </strong>
               <p>
                 Se a sessao ja existir, o backend tenta restaurar a conexao automaticamente.
@@ -664,7 +583,7 @@ export default function App() {
             </label>
 
             <label>
-              Intervalo entre envios
+              Intervalo entre envios (ms)
               <input
                 type="number"
                 min="500"
@@ -709,94 +628,122 @@ export default function App() {
               <p>Nenhum numero carregado ainda.</p>
             )}
           </div>
-
-          <div className="saved-campaigns">
-            <div className="saved-campaigns__header">
-              <div>
-                <strong>Listas salvas</strong>
-                <p>Reaproveite uma lista de disparo anterior salva no Supabase.</p>
-              </div>
-              <button
-                type="button"
-                className="button button--ghost button--small"
-                onClick={() => loadSavedCampaigns({ force: true })}
-                disabled={!supabaseState.ready || savedCampaigns.loading}
-              >
-                {savedCampaigns.loading ? "Atualizando..." : "Atualizar"}
-              </button>
-            </div>
-
-            {supabaseState.ready ? (
-              savedCampaigns.items.length > 0 ? (
-                <div className="saved-campaigns__list">
-                  {savedCampaigns.items.map((campaign) => (
-                    <div key={campaign.id} className="saved-campaign">
-                      <div>
-                        <strong>
-                          {campaign.sourceFileName || "Campanha sem arquivo"}
-                        </strong>
-                        <p>
-                          {campaign.totalContacts} contatos · {formatDateTime(campaign.createdAt)}
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        className="button button--ghost button--small"
-                        onClick={() => handleReuseCampaignList(campaign.id)}
-                        disabled={busyAction === `reuse-${campaign.id}`}
-                      >
-                        {busyAction === `reuse-${campaign.id}`
-                          ? "Carregando..."
-                          : "Usar lista"}
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="saved-campaigns__empty">
-                  Nenhuma lista salva ainda. Depois do primeiro disparo, ela aparece aqui.
-                </p>
-              )
-            ) : (
-              <p className="saved-campaigns__empty">
-                O Supabase precisa estar pronto para salvar e reutilizar listas.
-              </p>
-            )}
-          </div>
         </article>
 
+        {/* Painel de mensagem com abas */}
         <article className="panel panel--wide">
           <div className="panel-heading">
             <span className="panel-kicker">3. Mensagem</span>
-            <h2>Escreva o texto que sera enviado</h2>
+            <h2>Compose e envie</h2>
           </div>
 
-          <textarea
-            value={message}
-            onChange={(event) => setMessage(event.target.value)}
-            placeholder="Digite aqui a mensagem da campanha..."
-            rows={8}
-          />
-
-          <div className="composer-footer">
-            <small>
-              {message.trim().length} caracteres. Mantenha o conteudo relevante e envie apenas
-              para contatos autorizados.
-            </small>
-
+          <div className="tabs">
             <button
+              id="tab-disparo"
               type="button"
-              className="button button--accent"
-              onClick={handleSendMessages}
-              disabled={!canSend || busyAction === "dispatch"}
+              className={`tab-button${activeTab === "disparo" ? " tab-button--active" : ""}`}
+              onClick={() => setActiveTab("disparo")}
             >
-              {busyAction === "dispatch" || dispatchState.inProgress
-                ? "Enviando..."
-                : "Iniciar disparo"}
+              📋 Disparo em massa
+            </button>
+            <button
+              id="tab-direto"
+              type="button"
+              className={`tab-button${activeTab === "direto" ? " tab-button--active" : ""}`}
+              onClick={() => setActiveTab("direto")}
+            >
+              ✉️ Envio direto
             </button>
           </div>
+
+          {activeTab === "disparo" && (
+            <div className="tab-content">
+              <textarea
+                value={message}
+                onChange={(event) => setMessage(event.target.value)}
+                placeholder="Digite aqui a mensagem da campanha..."
+                rows={8}
+              />
+
+              <div className="composer-footer">
+                <small>
+                  {message.trim().length} caracteres. Mantenha o conteudo relevante e envie apenas
+                  para contatos autorizados.
+                </small>
+
+                <button
+                  id="btn-iniciar-disparo"
+                  type="button"
+                  className="button button--accent"
+                  onClick={handleSendMessages}
+                  disabled={!canSend || busyAction === "dispatch"}
+                >
+                  {busyAction === "dispatch" || dispatchState.inProgress
+                    ? "Enviando..."
+                    : "Iniciar disparo"}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {activeTab === "direto" && (
+            <div className="tab-content direct-send-form">
+              <label className="direct-label">
+                Numero de destino
+                <div className="direct-number-row">
+                  <span className="direct-country-badge">+{countryCode}</span>
+                  <input
+                    id="direct-number"
+                    type="tel"
+                    value={directNumber}
+                    onChange={(e) => setDirectNumber(e.target.value)}
+                    placeholder="(DDD) 9 XXXX-XXXX"
+                    className="direct-number-input"
+                  />
+                </div>
+              </label>
+
+              <label className="direct-label">
+                Mensagem
+                <textarea
+                  id="direct-message"
+                  value={directMessage}
+                  onChange={(e) => setDirectMessage(e.target.value)}
+                  placeholder="Digite a mensagem a ser enviada..."
+                  rows={6}
+                />
+              </label>
+
+              {directFeedback && (
+                <div
+                  className={`direct-feedback direct-feedback--${directFeedback.status}`}
+                >
+                  {directFeedback.status === "sent" ? "✅ " : "❌ "}
+                  {directFeedback.text}
+                </div>
+              )}
+
+              <div className="composer-footer">
+                <small>
+                  {directMessage.trim().length} caracteres.{" "}
+                  {!isConnected && "Conecte o WhatsApp para habilitar o envio."}
+                </small>
+
+                <button
+                  id="btn-enviar-direto"
+                  type="button"
+                  className="button button--primary"
+                  onClick={handleSendDirect}
+                  disabled={!canSendDirect}
+                >
+                  {directBusy ? "Enviando..." : "Enviar agora"}
+                </button>
+              </div>
+            </div>
+          )}
         </article>
 
+        {/* Progresso do disparo em massa */}
         <article className="panel panel--wide">
           <div className="panel-heading">
             <span className="panel-kicker">4. Acompanhamento</span>
